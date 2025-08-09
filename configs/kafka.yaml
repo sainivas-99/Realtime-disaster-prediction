@@ -1,0 +1,7 @@
+kafka:
+      bootstrap_servers: "localhost:9094"
+      internal_bootstrap_servers: "kafka:9092"
+
+      topics:
+            earthquake: "earthquake-topic"
+            wildfire: "wildfire-topic"
