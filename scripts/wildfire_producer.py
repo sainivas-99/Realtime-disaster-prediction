@@ -47,7 +47,7 @@ def main():
     # Process data
     cols_to_drop = ['scan', 'track', 'version', 'instrument', 'satellite']
     fire_data = fire_data.drop(cols_to_drop, axis=1)
-    fire_data['processed_at'] = datetime.utcnow().isoformat()
+    fire_data['processed_at'] = datetime.now().isoformat()
     
     # Initialize producer
     producer = KafkaProducer(

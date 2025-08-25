@@ -1,46 +1,97 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
+from pyspark.sql.functions import col, from_json, from_unixtime, current_timestamp
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, LongType, TimestampType, IntegerType
+from dotenv import load_dotenv
+import os
+import logging
+from delta import *
+from earthquake_consumer import create_spark_session
 
-def create_spark_session():
-    return SparkSession.builder \
-        .appName("WildfireDeltaWriter") \
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
-        .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,io.delta:delta-core_2.12:2.2.0") \
-        .getOrCreate()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("WildfireDeltaWriter")
+
+load_dotenv()
 
 def run_wildfire_consumer():
-    spark = create_spark_session()
-    
-    # Define schema for wildfire data
-    schema = StructType([
-        StructField("latitude", DoubleType()),
-        StructField("longitude", DoubleType()),
-        StructField("brightness", DoubleType()),
-        StructField("acq_date", TimestampType()),
-        StructField("acq_time", StringType()),
-        StructField("confidence", StringType())
-    ])
-    
-    # Read from Kafka
-    df = spark.readStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9094") \
-        .option("subscribe", "wildfire-topic") \
-        .load() \
-        .select(from_json(col("value").cast("string"), schema).alias("data")) \
-        .select("data.*")
-    
-    # Write to Delta Lake
-    query = df.writeStream \
-        .format("delta") \
-        .outputMode("append") \
-        .option("checkpointLocation", "data_collected/wildfire_delta_table/_checkpoints") \
-        .start("data_collected/wildfire_delta_table")
-    
-    return query
+    """Main function to consume from Kafka and write to Delta Lake"""
+    try:
+        spark = create_spark_session()
+        
+        schema = StructType([
+            StructField("latitude", DoubleType()),
+            StructField("longitude", DoubleType()),
+            StructField("bright_ti4", DoubleType()),
+            StructField("acq_date", TimestampType()),
+            StructField("acq_time", IntegerType()),
+            StructField("confidence", StringType()),
+            StructField("bright_ti5", DoubleType()),
+            StructField("frp", DoubleType()),
+            StructField("daynight", StringType())
+        ])
+        
+        # Kafka configuration
+        kafka_options = {
+            "kafka.bootstrap.servers": "localhost:9094",
+            "subscribe": "wildfire-topic",
+            "startingOffsets": "earliest",
+            "failOnDataLoss": "false"
+        }
+        
+        # Read from Kafka
+        df = spark.readStream \
+            .format("kafka") \
+            .options(**kafka_options) \
+            .load() \
+            .select(
+                from_json(col("value").cast("string"), schema).alias("data")
+            ) \
+            .select("data.*") 
+        
+        logger.info("Streaming DataFrame created successfully")
+        
+        # Write to console first for verification
+        console_query = df.writeStream \
+            .format("console") \
+            .outputMode("append") \
+            .start()
+        
+        # Wait a bit to see if console output works
+        import time
+        time.sleep(10)
+        console_query.stop()
+        
+        # Now try Delta Lake
+        s3_output_path = "s3a://realtime-disaster-data/wildfire_data/"
+        checkpoint_path = "s3a://realtime-disaster-data/checkpoints/wildfire_delta/"
+        
+        query = df.writeStream \
+            .format("delta") \
+            .outputMode("append") \
+            .option("checkpointLocation", checkpoint_path) \
+            .option("path", s3_output_path) \
+            .trigger(processingTime="30 seconds") \
+            .start() #.partitionBy("date") \
+        
+        logger.info("Streaming query started")
+        return query
+
+    except Exception as e:
+        logger.error(f"Error in run_wildfire_consumer: {str(e)}")
+        raise
 
 if __name__ == "__main__":
-    query = run_wildfire_consumer()
-    query.awaitTermination()
+    query = None
+    try:
+        logger.info("Starting Wildfire Delta Lake consumer")
+        query = run_wildfire_consumer()
+        query.awaitTermination()
+    except KeyboardInterrupt:
+        logger.info("Received interrupt signal. Stopping gracefully...")
+        if query:
+            query.stop()
+    except Exception as e:
+        logger.error(f"Fatal error: {str(e)}")
+        if query:
+            query.stop()
+        raise

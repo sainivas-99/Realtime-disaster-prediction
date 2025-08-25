@@ -57,7 +57,7 @@ def process_earthquakes(raw_data):
                 "longitude": float(eq["geometry"]["coordinates"][0]),
                 "latitude": float(eq["geometry"]["coordinates"][1]),
                 "depth": float(eq["geometry"]["coordinates"][2]),
-                "processed_at": datetime.utcnow().isoformat()
+                "processed_at": datetime.now().isoformat()
             })
         except (KeyError, TypeError) as e:
             print(f"Error processing earthquake data: {str(e)}")
